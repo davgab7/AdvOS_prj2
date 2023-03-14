@@ -6,116 +6,123 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/msg.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+
+#include "shared_mem.h"
 
 #define MAX_FILENAME_LEN 256
-#define MAX_CONTENT_LEN 4096
-#define MAX_RESPONSE_LEN 4096
 
-typedef struct {
-    char filename[MAX_FILENAME_LEN];
-    int content_len;
-    char content[MAX_CONTENT_LEN];
-} tinyfile_request;
+int pid;
+Request request;
+Response response;
 
-typedef struct {
-    int success;
-    int compressed_len;
-    char compressed_content[MAX_CONTENT_LEN];
-} tinyfile_response;
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s <filename>\n", argv[0]);
+        exit(1);
+    }
+    pid = getpid();
 
-typedef struct {
-    int sync;
-    tinyfile_request request;
-    tinyfile_response response;
-    int completed;
-} tinyfile_call;
-
-typedef struct {
-    int queue_size;
-    int next_write;
-    int next_read;
-    tinyfile_call calls[];
-} tinyfile_queue;
-
-static int fd;
-static tinyfile_queue* queue;
-static char* shared_mem;
-static size_t shared_mem_size;
-
-static int create_shared_mem() {
-    fd = shm_open("/tinyfile", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
-    if (fd == -1) {
-        perror("shm_open");
-        return -1;
+    int queue_id = get_sh_queue(SHM_NAME, 1);
+    if (queue_id == -1) {
+        printf("Error occured\n"); return -1;
     }
 
-    shared_mem_size = sizeof(tinyfile_queue) + MAX_FILENAME_LEN + MAX_CONTENT_LEN + MAX_RESPONSE_LEN;
-    if (ftruncate(fd, shared_mem_size) == -1) {
-        perror("ftruncate");
-        return -1;
+    // for (int j=0; j <=50; j++) {
+    // char tmp[20];
+    // sprintf(tmp, "msg %d", j);
+    // strcpy(request.filename, tmp);
+
+    // Open the file for reading
+    FILE *file = fopen(argv[1], "r");
+    if (file == NULL) {
+        printf("Error opening file.\n");
+        exit(1);
     }
 
-    shared_mem = mmap(NULL, shared_mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (shared_mem == MAP_FAILED) {
-        perror("mmap");
-        return -1;
+    // Determine the size of the file
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    printf("Size of provided file: %ld\n", size);
+
+    char *buffer = (char *)malloc(2*size);
+    if (buffer == NULL) {
+        printf("Error allocating memory.\n");
+        exit(1);
+    }
+    // Read the file contents into memory
+    fread(buffer, 1, size, file);
+
+    //add req to the queue
+    request.mtype = 1;
+    request.filesize = size;
+    request.unique_id = pid;
+    if (msgsnd(queue_id, &request, sizeof(Request), 0) == -1) {
+        printf("Error: Failed to send message. queue_id=%d, errno=%d\n", queue_id, errno);
     }
 
-    queue = (tinyfile_queue*) shared_mem;
-    queue->queue_size = (shared_mem_size - sizeof(tinyfile_queue)) / sizeof(tinyfile_call);
-    queue->next_write = 0;
-    queue->next_read = 0;
+    int unique_id = get_sh_queue(SHM_NAME, pid);
+    if (unique_id == -1) {printf("Error occured\n"); return -1;}
+
+    printf("waiting on server!\n");
+    // Wait for a request to arrive on the message queue
+    if (msgrcv(unique_id, &response, sizeof(Response), 1, 0) == -1) { // 0 for blocking, IPC_NOWAIT for non-blocking
+    // No request was found on the message queue; sleep for a bit
+         printf("Error:");
+    }
+
+    printf("Got permission to send in all units!\n");
+    printf("mem_size : %d\n", response.mem_size);
+
+    if (response.ready == 0) {printf("Error: server not ready"); exit(-1);}
+
+    char *block = attach_mem_block(SHM_NAME, SHM_SIZE, 1);
+    if (block == NULL) {
+        printf("Error occured\n"); return -1;
+    }
+    if (size < response.mem_size) {
+        //Now put file in the shared mem
+        printf("Attempting to write to shared_mem\n");
+        strncpy(block, buffer, SHM_SIZE);
+    } else {
+        //TODO need chuncking
+    }
+
+    request.mtype = 1;
+    request.filesize = size;
+    request.file_uploaded = 1;
+    if (msgsnd(unique_id, &request, sizeof(Request), 0) == -1) {
+        printf("Error: Failed to send message. queue_id=%d, errno=%d\n", queue_id, errno);
+    }
+
+    printf("waiting on server!\n");
+    // Wait for a request to compress
+    if (msgrcv(unique_id, &response, sizeof(Response), 1, 0) == -1) { // 0 for blocking, IPC_NOWAIT for non-blocking
+    // No request was found on the message queue; sleep for a bit
+         printf("Error:");
+    }
+
+    printf("Got permission to download!\n");
+
+    if (response.ready == 0) {printf("Error: server not ready"); exit(-1);}
+
+    //printf("Local: %s", buffer);
+    strncpy(buffer, block, 2*size);
+
+    if (msgsnd(unique_id, &request, sizeof(Request), 0) == -1) {
+        printf("Error: Failed to send message. queue_id=%d, errno=%d\n", queue_id, errno);
+    }
+
+    printf("This is what I got\n %s\n", buffer);
+
+    // Cleanup
+    dettach_mem_block(block);
+    free(buffer);
+    fclose(file);
 
     return 0;
 }
 
-static void destroy_shared_mem() {
-    if (shm_unlink("/tinyfile") == -1) {
-        perror("shm_unlink");
-    }
-
-    if (munmap(shared_mem, shared_mem_size) == -1) {
-        perror("munmap");
-    }
-
-    if (close(fd) == -1) {
-        perror("close");
-    }
-}
-
-static int enqueue_request(tinyfile_request* request, int sync) {
-    int next_write = (queue->next_write + 1) % queue->queue_size;
-    if (next_write == queue->next_read) {
-        return -1; // queue is full
-    }
-
-    tinyfile_call* call = &queue->calls[queue->next_write];
-    call->sync = sync;
-    memcpy(&call->request, request, sizeof(tinyfile_request));
-    call->completed = 0;
-
-    queue->next_write = next_write;
-
-    return 0;
-}
-
-static int dequeue_response(tinyfile_response* response) {
-    if (queue->next_read == queue->next_write) {
-        return -1; // queue is empty
-    }
-
-    tinyfile_call* call = &queue->calls[queue->next_read];
-    if (!call->completed) {
-        return 0; // call not yet completed
-    }
-
-    memcpy(response, &call->response, sizeof(tinyfile_response));
-
-    queue->next_read = (queue->next_read + 1) % queue->queue_size;
-
-    return 1;
-}
-
-static int wait_for_response() {
-    while (1) {
-        tinyfile_response
