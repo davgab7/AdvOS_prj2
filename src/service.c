@@ -12,7 +12,7 @@
 #include <sys/sem.h>
 #include <sys/shm.h>
 #include <unistd.h>
-//#include "../snappy-c/snappy.h"
+#include "../snappy-c/snappy.h"
 #include "shared_mem.h"
 
 #define QUEUE_MAX_SIZE 20
@@ -63,7 +63,8 @@ int main(int argc, char *argv[]) {
             continue;
         }
         
-        int unique_id = get_sh_queue(SHM_NAME, request.unique_id);
+        int unique_id_num = request.unique_id;
+        int unique_id = get_sh_queue(SHM_NAME, unique_id_num);
         if (unique_id == -1) {printf("Error occured while joining unique queue\n"); return -1;}
 
         response.mtype = 1;
@@ -89,7 +90,8 @@ int main(int argc, char *argv[]) {
 
         //Wait make usre clinet is done and then clean shared mem
         if (msgrcv(unique_id, &request, sizeof(Request), 1, 0) == -1) {printf("Error:");}
-        memset(block, 0, total_mem_size);
+        destroy_sh_queue(SHM_NAME, unique_id_num); //Destory unique queue
+        memset(block, 0, total_mem_size); //Clear shared mem
     }
 
     

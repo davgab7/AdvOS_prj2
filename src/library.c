@@ -9,6 +9,7 @@
 #include <sys/msg.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
+#include <sys/time.h>
 
 #include "shared_mem.h"
 
@@ -17,6 +18,7 @@
 int pid;
 Request request;
 Response response;
+struct timeval start, end, res_time;
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -77,6 +79,9 @@ int main(int argc, char *argv[]) {
     printf("Got permission to send in all units!\n");
     printf("mem_size : %d\n", response.mem_size);
 
+    //Start timer
+    gettimeofday(&start,NULL);
+
     if (response.ready == 0) {printf("Error: server not ready"); exit(-1);}
 
     char *block = attach_mem_block(SHM_NAME, SHM_SIZE, 1);
@@ -89,6 +94,10 @@ int main(int argc, char *argv[]) {
         strncpy(block, buffer, SHM_SIZE);
     } else {
         //TODO need chuncking
+        //size_t size_of_chunk;
+        // for (int i=0; i<size; i+=size_of_chunk) {
+        //     //send(id, buffer+i, flags);
+        // }
     }
 
     request.mtype = 1;
@@ -116,12 +125,27 @@ int main(int argc, char *argv[]) {
         printf("Error: Failed to send message. queue_id=%d, errno=%d\n", queue_id, errno);
     }
 
-    printf("This is what I got\n %s\n", buffer);
+    //printf("This is what I got\n %s\n", buffer);
+
+    //Stop timer
+    gettimeofday(&end,NULL);
+    timersub(&end, &start, &res_time);
+    printf("=> CST: %lu microseconds\n", (res_time.tv_sec*1000000L+res_time.tv_usec));
+
+    // Open a new file for writing
+    char newfile_name[100];
+    sprintf(newfile_name, "%s_compressed", argv[1]);
+    FILE *newfile = fopen(newfile_name, "w");
+    if (newfile == NULL) {printf("Error opening new file.\n");}
+
+    // Write the contents of the buffer to the new file
+    fwrite(buffer, 1, 2*size, newfile);
 
     // Cleanup
     dettach_mem_block(block);
     free(buffer);
     fclose(file);
+    fclose(newfile);
 
     return 0;
 }
