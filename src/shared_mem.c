@@ -11,7 +11,10 @@
 #include <sys/msg.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
-#include <unistd.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/stat.h>  
 #include "shared_mem.h"
 
 static key_t get_key(char *filename, int id) {
@@ -75,4 +78,20 @@ int destroy_sh_queue(char *filename, int id) {
     return msgctl(msgq_id, IPC_RMID, NULL);
 }
 
+sem_t* create_semaphore(char *name, int value) {
+    sem_t* tmp = sem_open(name, O_CREAT, 0666, value);
+    if (tmp == SEM_FAILED) {
+        perror("sem_open failed");
+        exit(1);
+    }
+    return tmp;
+}
 
+sem_t* attach_semaphore(char *name) {
+    sem_t* tmp = sem_open(name, 0);
+    if (tmp == SEM_FAILED) {
+        perror("sem_open failed");
+        exit(1);
+    }
+    return tmp;
+}

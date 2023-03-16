@@ -12,33 +12,40 @@
 #include <sys/sem.h>
 #include <sys/shm.h>
 #include <unistd.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <fcntl.h> 
 #include "../snappy-c/snappy.h"
 #include "shared_mem.h"
 
-#define QUEUE_MAX_SIZE 20
-
+#define COMPRESS_MAX_SIZE 2621444
 
 // global variables for shared memory
 //int total_mem_size;
 
 Request request;
 Response response;
+size_t filesize, chunk_size;
+int total_mem_size, num_chunks;
 
 // global variables for queue
 pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t queue_cv = PTHREAD_COND_INITIALIZER;
 
 // function prototypes
-//void handle_request(Request request);
+char* handle_request(char *file, size_t file_size);
 
 int main(int argc, char *argv[]) {
     // if (argc != 3) {
     //     printf("Usage: %s <n_sms>, <sms_size>\n", argv[0]);
     //     exit(1);
     // }
-    int total_mem_size = SHM_SIZE;
+    total_mem_size = SHM_SIZE;
 
+    //Clean up 
     destroy_mem_block(SHM_NAME, 1);
+    sem_unlink(WRITER_SEM_NAME);
+    sem_unlink(READER_SEM_NAME);
 
     int queue_id = get_sh_queue(SHM_NAME, 1);
     if (queue_id == -1) {printf("Error occured when creating queue\n"); return -1;}
@@ -48,6 +55,9 @@ int main(int argc, char *argv[]) {
         printf("Error occured\n"); return -1;
     }
 
+    sem_t* writer_sem = create_semaphore(WRITER_SEM_NAME, 0);
+    sem_t* reader_sem = create_semaphore(READER_SEM_NAME, 1);
+
     char *buffer = (char *)malloc(total_mem_size);
     if (buffer == NULL) {
         printf("Error allocating memory.\n");
@@ -56,6 +66,7 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         printf("Server running!\n");
+        // 1 ===============================================
         // Wait for a request to arrive on the message queue
         if (msgrcv(queue_id, &request, sizeof(Request), 1, 0) == -1) { // 0 for blocking, IPC_NOWAIT for non-blocking
         // No request was found on the message queue; sleep for a bit
@@ -67,6 +78,7 @@ int main(int argc, char *argv[]) {
         int unique_id = get_sh_queue(SHM_NAME, unique_id_num);
         if (unique_id == -1) {printf("Error occured while joining unique queue\n"); return -1;}
 
+        // 2 ===============================================
         response.mtype = 1;
         response.mem_size = total_mem_size;
         response.ready = 1;
@@ -74,13 +86,35 @@ int main(int argc, char *argv[]) {
             printf("Error: Failed to send message. queue_id=%d, errno=%d\n", unique_id, errno);
         }
 
-        if (msgrcv(unique_id, &request, sizeof(Request), 1, 0) == -1) {printf("Error:");}
+        // // 3 ===============================================
+        // if (msgrcv(unique_id, &request, sizeof(Request), 1, 0) == -1) {printf("Error:");}
 
-        printf("This is what I got\n %s\n", block);
+        filesize = request.filesize;
+        num_chunks = (int)(filesize / total_mem_size)+1;
+        char* uncompressed_file = (char *)malloc(filesize+1000);
+        printf("chunk # : %d\n", num_chunks);
+        printf("filesize # : %ld\n", filesize);
 
-        strncpy(block+5, "XXXX", 4);
-        printf("This is what I made\n %s\n", block);
+        //Recieve file from client
+        for (int i = 0; i < num_chunks; i++) {
+            printf("Attempting to read chunk_%d from shared_mem\n", i);
+            sem_wait(writer_sem);
+            int x = filesize - (total_mem_size*(i));
+            if (i == num_chunks - 1) strncpy(uncompressed_file + (total_mem_size*i), block, x);
+            else strncpy(uncompressed_file + (total_mem_size*i), block, total_mem_size);
+            sem_post(reader_sem);
+        } 
 
+        //printf("This is what I got\n %s\n", uncompressed_file);
+
+        char* compressed_file = handle_request(uncompressed_file, filesize);
+        if (compressed_file == NULL) exit(1); 
+        //printf("This is what I made\n %s\n", compressed_file);
+
+        //Copy compressed into buffer
+        strncpy(block, compressed_file, SHM_SIZE);
+
+        // 4 ===============================================
         response.mtype = 1;
         response.mem_size = total_mem_size;
         response.ready = 1;
@@ -88,15 +122,39 @@ int main(int argc, char *argv[]) {
             printf("Error: Failed to send message. queue_id=%d, errno=%d\n", unique_id, errno);
         }
 
-        //Wait make usre clinet is done and then clean shared mem
+        //Wait make sure client is done and then clean shared mem
+        // 5 ===============================================
         if (msgrcv(unique_id, &request, sizeof(Request), 1, 0) == -1) {printf("Error:");}
         destroy_sh_queue(SHM_NAME, unique_id_num); //Destory unique queue
         memset(block, 0, total_mem_size); //Clear shared mem
     }
 
-    
+    sem_close(writer_sem);
+    sem_close(reader_sem);
+    sem_unlink(WRITER_SEM_NAME);
+    sem_unlink(READER_SEM_NAME);
+    destroy_sh_queue(SHM_NAME, 1);
     dettach_mem_block(block);
     destroy_mem_block(SHM_NAME, 1);
+
+
+}
+
+char* handle_request(char *file, size_t file_size) {
+    // compress the file content
+    char *compressed  = (char *)malloc(2*file_size);
+    response.compressed_size = snappy_max_compressed_length(file_size);
+    printf("max_comp_size : %ld\n", response.compressed_size);
+    struct snappy_env env;
+    snappy_init_env(&env);
+    if (snappy_compress(&env, file, file_size, compressed, &response.compressed_size) != 0) {
+        printf("strncppy failed"); return NULL;
+    }
+    printf("compressed_size-> %ld\n", response.compressed_size);
+    //printf("This is what I made\n %.*s\n", (int)compressed_size, compressed);
+    return compressed;
+}
+
 
 
     // // Create the semaphore
@@ -108,8 +166,6 @@ int main(int argc, char *argv[]) {
 
     // // Initialize the semaphore to 1 (i.e., unlocked)
     // semctl(sem_id, 0, SETVAL, 1);
-
-
 
     // // Loop indefinitely, servicing client requests
     // while (1) {
@@ -134,7 +190,7 @@ int main(int argc, char *argv[]) {
     //     sembuf.sem_flg = SEM_UNDO;
     //     semop(sem_id, &sembuf, 1);
 
-        
+
 
     //     handle_request();
     //     // Send the response back to the client
@@ -157,30 +213,3 @@ int main(int argc, char *argv[]) {
     
 
     // return 0;
-}
-
-
-// void handle_request(Request request) {
-//     // compress the file content
-//     size_t compressed_size = snappy_max_compressed_length(strlen(request.filecontent));
-//     if (snappy_compress(request.filecontent, strlen(request.filecontent), request.compressed_content, &compressed_size) != SNAPPY_OK) {
-//         // if compression fails, send error response
-//         Response response = {0};
-//         response.success = 0;
-//         strncpy(response.error_message, "Compression failed", sizeof(response.error_message));
-//         strncpy(response.request.filename, request.filename, sizeof(response.request.filename));
-//         strncpy(response.request.filecontent, request.filecontent, sizeof(response.request.filecontent));
-//         response.request.compressed_size = compressed_size;
-//         //strncpy(response.request.compressed_content, request.compressed_content, sizeof(response.request.compressed_content));
-//     }
-//     else {
-//         Response response = {0};
-//         response.success = 1;
-//         strncpy(response.error_message, "Compression successful", sizeof(response.error_message));
-//         strncpy(response.request.filename, request.filename, sizeof(response.request.filename));
-//         strncpy(response.request.filecontent, request.filecontent, sizeof(response.request.filecontent));
-//         response.request.compressed_size = compressed_size;
-//         strncpy(response.request.compressed_content, request.compressed_content, sizeof(response.request.compressed_content));
-//     }
-// }
-
