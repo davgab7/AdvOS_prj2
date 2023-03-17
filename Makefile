@@ -14,6 +14,7 @@
 # 	$(CC) $(CFLAGS) src/library.c -o bin/lib
 
 
+
 # clean :
 # 	@rm src/*.o bin/*.a
 # 	@echo Cleaned!

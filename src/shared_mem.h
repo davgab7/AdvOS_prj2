@@ -9,7 +9,7 @@ int destroy_sh_queue(char *filename, int id);
 sem_t* create_semaphore(char *name, int value);
 sem_t* attach_semaphore(char *name);
 
-#define SHM_NAME "src/service.c"
+#define SHM_NAME "src/library.c"
 #define SHM_SIZE 40960
 
 #define WRITER_SEM_NAME "/writer"

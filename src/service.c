@@ -110,7 +110,7 @@ int main(int argc, char *argv[]) {
         filesize = request.filesize;
         num_chunks = (int)(filesize / total_mem_size)+1;
         char* uncompressed_file = (char *)malloc(filesize+1000);
-        printf("chunk # : %d\n", num_chunks);
+        printf("\nchunk # : %d\n", num_chunks);
         printf("filesize # : %ld\n", filesize);
 
         //Recieve file from client
@@ -168,7 +168,7 @@ char* handle_request(char *file, size_t file_size) {
     if (snappy_compress(&env, file, file_size, compressed, &response.compressed_size) != 0) {
         printf("strncppy failed"); return NULL;
     }
-    printf("compressed_size-> %ld\n", response.compressed_size);
+    printf("compressed_size-> %ld\n\n", response.compressed_size);
     //printf("This is what I made\n %.*s\n", (int)compressed_size, compressed);
     return compressed;
 }
