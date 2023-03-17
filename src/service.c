@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/mman.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <errno.h>
@@ -14,56 +12,76 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <sys/mman.h>
-#include <fcntl.h> 
 #include "../snappy-c/snappy.h"
 #include "shared_mem.h"
 
 #define COMPRESS_MAX_SIZE 2621444
-
-// global variables for shared memory
-//int total_mem_size;
 
 Request request;
 Response response;
 size_t filesize, chunk_size;
 int total_mem_size, num_chunks;
 
-// global variables for queue
-pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t queue_cv = PTHREAD_COND_INITIALIZER;
+// pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+// pthread_cond_t queue_cv = PTHREAD_COND_INITIALIZER;
 
 // function prototypes
 char* handle_request(char *file, size_t file_size);
 
+void sigint_handler(int sig) {
+    printf("Received SIGINT signal (%d).\n", sig);
+    // Insert your code to execute here
+    sem_unlink(WRITER_SEM_NAME);
+    sem_unlink(READER_SEM_NAME);
+    destroy_sh_queue(SHM_NAME, 1);
+    destroy_mem_block(SHM_NAME, 1);
+    exit(1);
+}
+
+
 int main(int argc, char *argv[]) {
-    // if (argc != 3) {
-    //     printf("Usage: %s <n_sms>, <sms_size>\n", argv[0]);
-    //     exit(1);
-    // }
-    total_mem_size = SHM_SIZE;
+    if (argc != 3) {
+        printf("Usage: %s <n_sms>, <sms_size>\n", argv[0]);
+        exit(1);
+    }
+    int a = atoi(argv[1]);
+    int b = atoi(argv[2]);
+    if (a <= 0 || b <= 0) {
+        printf("Both arguments must be positive integers.\n");
+        exit(1);
+    }
+
+    total_mem_size = a*b;
 
     //Clean up 
     destroy_mem_block(SHM_NAME, 1);
+    destroy_sh_queue(SHM_NAME, 1);
     sem_unlink(WRITER_SEM_NAME);
     sem_unlink(READER_SEM_NAME);
 
     int queue_id = get_sh_queue(SHM_NAME, 1);
     if (queue_id == -1) {printf("Error occured when creating queue\n"); return -1;}
 
-    char *block = attach_mem_block(SHM_NAME, SHM_SIZE, 1);
+    char *block = attach_mem_block(SHM_NAME, total_mem_size, 1);
     if (block == NULL) {
         printf("Error occured\n"); return -1;
     }
 
     sem_t* writer_sem = create_semaphore(WRITER_SEM_NAME, 0);
     sem_t* reader_sem = create_semaphore(READER_SEM_NAME, 1);
-
+    
     char *buffer = (char *)malloc(total_mem_size);
     if (buffer == NULL) {
         printf("Error allocating memory.\n");
         exit(1);
     }
+    // Set up the signal handler for SIGINT
+    signal(SIGINT, sigint_handler);
 
+
+    //TIME
+    //TO
+    //RUN
     while (1) {
         printf("Server running!\n");
         // 1 ===============================================
@@ -97,7 +115,7 @@ int main(int argc, char *argv[]) {
 
         //Recieve file from client
         for (int i = 0; i < num_chunks; i++) {
-            printf("Attempting to read chunk_%d from shared_mem\n", i);
+            //printf("Attempting to read chunk_%d from shared_mem\n", i);
             sem_wait(writer_sem);
             int x = filesize - (total_mem_size*(i));
             if (i == num_chunks - 1) strncpy(uncompressed_file + (total_mem_size*i), block, x);
@@ -112,7 +130,7 @@ int main(int argc, char *argv[]) {
         //printf("This is what I made\n %s\n", compressed_file);
 
         //Copy compressed into buffer
-        strncpy(block, compressed_file, SHM_SIZE);
+        strncpy(block, compressed_file, total_mem_size);
 
         // 4 ===============================================
         response.mtype = 1;
@@ -136,7 +154,7 @@ int main(int argc, char *argv[]) {
     destroy_sh_queue(SHM_NAME, 1);
     dettach_mem_block(block);
     destroy_mem_block(SHM_NAME, 1);
-
+    free(buffer);
 
 }
 
@@ -154,6 +172,21 @@ char* handle_request(char *file, size_t file_size) {
     //printf("This is what I made\n %.*s\n", (int)compressed_size, compressed);
     return compressed;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -190,8 +223,6 @@ char* handle_request(char *file, size_t file_size) {
     //     sembuf.sem_flg = SEM_UNDO;
     //     semop(sem_id, &sembuf, 1);
 
-
-
     //     handle_request();
     //     // Send the response back to the client
     //     if (msgsnd(msgq_id, &response, sizeof(Response), 0) == -1) {
@@ -202,8 +233,6 @@ char* handle_request(char *file, size_t file_size) {
     //     sembuf.sem_op = 1;
     //     semop(sem_id, &sembuf, 1);
     // }
-
-    
 
     // // Destroy the message queue, semaphore, and shared memory segment
     // if (semctl(sem_id, 0, IPC_RMID) == -1) {

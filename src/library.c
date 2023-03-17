@@ -9,43 +9,29 @@
 #include <sys/msg.h>
 #include <sys/sem.h>
 #include <sys/shm.h>
-#include <sys/time.h>
 #include <semaphore.h>
-#include <sys/mman.h>
-#include <fcntl.h> 
 
 #include "shared_mem.h"
 
-#define MAX_FILENAME_LEN 256
-
-int pid, num_chunks;
+int num_chunks;
 Request request;
 Response response;
-struct timeval start, end, res_time;
 size_t filesize, mem_size, compressed_size;
 
-int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Usage: %s <filename>\n", argv[0]);
-        exit(1);
-    }
-    pid = getpid();
+void sync_call(char *filename, int pid) {
+    printf("Starting SYNC CALL\n");
 
     int queue_id = get_sh_queue(SHM_NAME, 1);
     if (queue_id == -1) {
-        printf("Error occured\n"); return -1;
+        printf("Error occured\n"); exit(1);
     }
 
+    // open semaphores
     sem_t* writer_sem = attach_semaphore(WRITER_SEM_NAME);
     sem_t* reader_sem = attach_semaphore(READER_SEM_NAME);
 
-    // for (int j=0; j <=50; j++) {
-    // char tmp[20];
-    // sprintf(tmp, "msg %d", j);
-    // strcpy(request.filename, tmp);
-
     // Open the file for reading
-    FILE *file = fopen(argv[1], "r");
+    FILE *file = fopen(filename, "r");
     if (file == NULL) {
         printf("Error opening file.\n");
         exit(1);
@@ -75,7 +61,7 @@ int main(int argc, char *argv[]) {
     }
 
     int unique_id = get_sh_queue(SHM_NAME, pid);
-    if (unique_id == -1) {printf("Error occured\n"); return -1;}
+    if (unique_id == -1) {printf("Error occured\n"); exit(1);}
 
     printf("waiting on server!\n");
     // Wait for a request to arrive on the message queue
@@ -91,19 +77,18 @@ int main(int argc, char *argv[]) {
     num_chunks = (int)(filesize / mem_size)+1;
     printf("chunk # : %d\n", num_chunks);
 
-    //Start timer
-    gettimeofday(&start,NULL);
+
 
     if (response.ready == 0) {printf("Error: server not ready"); exit(-1);}
 
     char *block = attach_mem_block(SHM_NAME, SHM_SIZE, 1);
     if (block == NULL) {
-        printf("Error occured\n"); return -1;
+        printf("Error occured\n"); exit(1);
     }
 
     //Send file to server in chunks
     for (int i = 0; i < num_chunks; i++) {
-        printf("Attempting to write chunk_%d to shared_mem\n", i);
+        //printf("Attempting to write chunk_%d to shared_mem\n", i);
         sem_wait(reader_sem);
         strncpy(block, buffer + (mem_size*i), mem_size);
         sem_post(writer_sem);
@@ -141,14 +126,9 @@ int main(int argc, char *argv[]) {
 
     //printf("This is what I got\n %s\n", buffer);
 
-    //Stop timer
-    gettimeofday(&end,NULL);
-    timersub(&end, &start, &res_time);
-    printf("=> CST: %lu microseconds\n", (res_time.tv_sec*1000000L+res_time.tv_usec));
-
     // Open a new file for writing
     char newfile_name[100];
-    sprintf(newfile_name, "%s_compressed", argv[1]);
+    sprintf(newfile_name, "%s_compressed", filename);
     FILE *newfile = fopen(newfile_name, "w");
     if (newfile == NULL) {printf("Error opening new file.\n");}
 
@@ -162,7 +142,8 @@ int main(int argc, char *argv[]) {
     free(buffer);
     fclose(file);
     fclose(newfile);
-
-    return 0;
 }
 
+void async_call(char *filename, int pid) {
+    printf("Starting ASYNC CALL\n");
+}
